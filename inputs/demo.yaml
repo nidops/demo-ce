@@ -1,0 +1,36 @@
+# demo.yaml - CEVO Command Table for Demo
+
+includes:
+  - demo.h  # Header containing the demo_* handlers
+
+commands:
+  # --- Math operations ---
+  - name: add
+    handler: demo_calc_add
+    args:
+      - type: u32
+      - type: u32
+
+  - name: div
+    handler: demo_calc_div
+    args:
+      - type: u32
+      - type: u32
+
+  # --- String operations ---
+  - name: upper
+    handler: demo_str_upper
+    args:
+      - type: s
+
+  - name: reverse
+    handler: demo_str_reverse
+    args:
+      - type: s
+
+  # --- Byte buffer operations ---
+  - name: sort
+    handler: demo_dump_sorted_bytes
+    args:
+      - type: u8p
+      - type: u16

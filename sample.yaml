@@ -1,0 +1,11 @@
+sample:
+  name: CEVO - Async UART line receiver
+tests:
+  sample.drivers.uart_line_rx:
+    integration_platforms:
+      - qemu_x86
+    tags:
+      - uart
+      - serial
+    filter: CONFIG_SERIAL and CONFIG_UART_INTERRUPT_DRIVEN and dt_chosen_enabled("zephyr,console")
+    harness: keyboard
