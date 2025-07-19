@@ -8,13 +8,7 @@
  * and QEMU (with echo enabled only in QEMU).
  */
 
-#include <string.h>
-#include <ctype.h>
-#include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
-
-#include "uart.h"
+#include "uart_line.h"
 #include "ce_dispatch.h"
 
 /**
@@ -27,167 +21,53 @@
  */
 #define UART_LINE_MSGQ_ALIGN   (4u)
 
-#define UART_PROMPT            ">> "
+/* Each receiver instance owns its own queue */
+K_MSGQ_DEFINE(line_msgq, UART_LINE_MAX_LEN, UART_LINE_QUEUE_LENGTH, UART_LINE_MSGQ_ALIGN);
 
-/* Platform-agnostic UART selection */
-#define UART_NODE DT_CHOSEN(zephyr_console)
+/* Default UART line context (TX + RX + warnings) */
+static uart_line_st g_uart_line;
 
-/* RX line queue */
-K_MSGQ_DEFINE(uart_msgq, UART_RX_BUF_SIZE, UART_LINE_QUEUE_LENGTH, UART_LINE_MSGQ_ALIGN);
-
-/* UART device reference */
-static const struct device *uart_dev = NULL;
-
-/* Warning messages reused in ISR */
-static const char WARN_QUEUE_FULL[] = "\r\n[WARN] RX queue full, line dropped\r\n";
-static const char WARN_LINE_TOO_LONG[] = "\r\n[WARN] Line too long, discarded\r\n";
-
-void uart_send_line(const char *line)
-{
-    if (NULL == line)
-    {
-        return;
-    }
-
-    for (size_t i = 0u; '\0' != line[i]; ++i)
-    {
-        (void)uart_poll_out(uart_dev, line[i]);
-    }
-}
-
-/**
- * @brief UART ISR: accumulates chars, queues complete lines
- */
-static void uart_isr(const struct device *dev, void *user_data)
-{
-    /* Static RX buffer persists across ISR calls */
-    static char rx_buf[UART_RX_BUF_SIZE];
-    static size_t rx_pos = 0u;
-    static char last_char = '\0';
-    uint8_t c;
-
-    ARG_UNUSED(user_data);
-
-    if ((NULL == dev) || (!uart_irq_update(dev)) || (!uart_irq_rx_ready(dev)))
-    {
-        return;
-    }
-
-    while (uart_fifo_read(dev, &c, 1u) == 1)
-    {
-#ifdef CONFIG_QEMU_TARGET
-        /* Echo only in QEMU for demo */
-        (void)uart_poll_out(dev, c);
-#endif
-
-        /* Detect end-of-line */
-        if ((('\n' == c) || ('\r' == c)) && (rx_pos > 0u))
-        {
-            /* Skip CRLF / LFCR double sequences */
-            if (((last_char == '\r') && (c == '\n')) ||
-                ((last_char == '\n') && (c == '\r')))
-            {
-                last_char = (char)c;
-                continue;
-            }
-
-            /* Null-terminate */
-            rx_buf[rx_pos] = '\0';
-
-            /* Push to queue or drop if full */
-            if (0 != k_msgq_put(&uart_msgq, rx_buf, K_NO_WAIT))
-            {
-                uart_send_line(WARN_QUEUE_FULL);
-            }
-            rx_pos = 0u;
-        }
-        else if (rx_pos < (UART_RX_BUF_SIZE - 1u))
-        {
-            rx_buf[rx_pos++] = (char)c;
-        }
-        else
-        {
-            /* Overflow: discard current line */
-            rx_pos = 0u;
-            uart_send_line(WARN_LINE_TOO_LONG);
-        }
-
-        last_char = (char)c;
-    }
-}
-
-/**
- * @brief Initialize interrupt-driven UART line receiver
- */
-static int uart_line_rx_init(const struct device *dev)
-{
-    if ((NULL == dev) || (!device_is_ready(dev)))
-    {
-        return -ENODEV;
-    }
-
-    uart_dev = dev;
-
-    int ret = uart_irq_callback_user_data_set(uart_dev, uart_isr, NULL);
-    if (0 != ret)
-    {
-        return ret;
-    }
-
-    uart_irq_rx_enable(uart_dev);
-    return 0;
-}
-
-/**
- * @brief Process received line if available
- */
-static void uart_line_rx_process(k_timeout_t timeout)
-{
-    char line_buf[UART_RX_BUF_SIZE];
-
-    if (0 == k_msgq_get(&uart_msgq, line_buf, timeout))
-    {
-        if ('\0' != line_buf[0])
-        {
-            uart_send_line("\r\n");
-            const bool ok = ce_dispatch_from_line(line_buf);
-            uart_send_line(ok ? "\r\n" UART_PROMPT : "ERR\r\n" UART_PROMPT);
-        }
-        else
-        {
-            uart_send_line(UART_PROMPT);
-        }
-
-        uart_irq_rx_enable(uart_dev);
-    }
-}
-
-/**
- * @brief Application entry point
- */
 int main(void)
 {
-    const struct device *uart = DEVICE_DT_GET(UART_NODE);
+    const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
-    if (uart_line_rx_init(uart) != 0)
+    if (0 != uart_line_init(dev, &g_uart_line, &line_msgq))
     {
-        uart_send_line("[FATAL] UART init failed\r\n");
-        return 0;
+        while (true)
+        {
+            printk("FATAL: UART init failed\n");
+            k_msleep(1000);
+        }
     }
 
-    uart_send_line("\r\nCEVO Demo " CONFIG_BOARD " ready\r\n>> ");
+    uart_line_set_default(&g_uart_line);
+
+    uart_line_tx(&g_uart_line, "\r\nCEVO Demo " CONFIG_BOARD " ready\r\n>> ");
+
+    char line_buf[UART_LINE_MAX_LEN];
 
     while (true)
     {
+        /* Print deferred warnings once per loop */
+        uart_line_rx_poll_warnings(&g_uart_line, uart_line_tx);
+
 #ifdef CONFIG_QEMU_TARGET
-        /* QEMU: must poll, K_FOREVER freezes emulation */
-        uart_line_rx_process(K_NO_WAIT);
-        k_msleep(1);
+        /* QEMU: must poll. "K_FOREVER" freezes emulation */
+        const k_timeout_t rx_timeout = K_NO_WAIT;
 #else
         /* Real HW: safe to block, wakes on UART IRQ */
-        uart_line_rx_process(K_FOREVER);
+        const k_timeout_t rx_timeout = K_FOREVER;
+#endif
+
+        if (uart_line_rx_get(&g_uart_line, line_buf, sizeof(line_buf), rx_timeout))
+        {
+            uart_line_tx(&g_uart_line, "\r\n");
+            const bool ok = ce_dispatch_from_line(line_buf);
+            uart_line_tx(&g_uart_line, ok ? "\r\n>> " : "\r\nERR\r\n>> ");
+        }
+
+#ifdef CONFIG_QEMU_TARGET
+        k_msleep(1);
 #endif
     }
-
-    return 0;
 }

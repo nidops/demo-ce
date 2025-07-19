@@ -8,7 +8,7 @@
 #include <ctype.h>
 #include <zephyr/kernel.h>
 #include "demo.h"
-#include "uart.h"
+#include "uart_line.h"
 
 #define DEMO_BUF_MAX   (128u)
 #define DEMO_LINE_MAX  (64u)
@@ -19,7 +19,7 @@ bool demo_calc_add(uint32_t a, uint32_t b)
     uint32_t sum = a + b;
 
     (void)snprintk(msg, sizeof(msg), "Sum: %u", sum);
-    uart_send_line(msg);
+    uart_line_transmit(msg);
 
     return true;
 }
@@ -28,7 +28,7 @@ bool demo_calc_div(uint32_t a, uint32_t b)
 {
     if (0U == b)
     {
-        uart_send_line("Error: Division by zero");
+        uart_line_transmit("Error: Division by zero");
         return false;
     }
 
@@ -36,7 +36,7 @@ bool demo_calc_div(uint32_t a, uint32_t b)
 
     char msg[DEMO_LINE_MAX];
     (void)snprintk(msg, sizeof(msg), "Quotient: %u", result);
-    uart_send_line(msg);
+    uart_line_transmit(msg);
 
     return true;
 }
@@ -45,7 +45,7 @@ bool demo_str_upper(const char *input)
 {
     if ((NULL == input) || ('\0' == input[0]))
     {
-        uart_send_line("No input");
+        uart_line_transmit("No input");
         return false;
     }
 
@@ -59,7 +59,7 @@ bool demo_str_upper(const char *input)
     }
     buf[i] = '\0';
 
-    uart_send_line(buf);
+    uart_line_transmit(buf);
     return true;
 }
 
@@ -67,13 +67,13 @@ bool demo_dump_sorted_bytes(const uint8_t *data, uint16_t len)
 {
     if ((NULL == data) || (0u == len))
     {
-        uart_send_line("No data");
+        uart_line_transmit("No data");
         return false;
     }
 
     if (len > DEMO_BUF_MAX)
     {
-        uart_send_line("[WARN] Input too long, truncating to 128 bytes\r\n");
+        uart_line_transmit("[WARN] Input too long, truncating to 128 bytes\r\n");
         len = DEMO_BUF_MAX;
     }
 
@@ -101,12 +101,12 @@ bool demo_dump_sorted_bytes(const uint8_t *data, uint16_t len)
     for (size_t i = 0u; i < len; ++i)
     {
         (void)snprintk(hex_buf, sizeof(hex_buf), "%02X ", bytes[i]);
-        uart_send_line(hex_buf);
+        uart_line_transmit(hex_buf);
 
         /* Wrap every 16 bytes for readability */
         if (0u == ((i + 1u) & 0x0Fu))
         {
-            uart_send_line("\r\n");
+            uart_line_transmit("\r\n");
         }
     }
 
@@ -134,7 +134,7 @@ bool demo_str_reverse(const char *input)
     }
     buf[len] = '\0';
 
-    uart_send_line(buf);
+    uart_line_transmit(buf);
 
     return true;
 }

@@ -44,5 +44,6 @@ target_link_libraries(app PRIVATE cevo)
 # --------------------------------------------------------------------
 target_sources(app PRIVATE
     src/main.c
+    src/uart_line.c
     src/demo.c
 )
