@@ -54,13 +54,8 @@ int main(void)
         /* Print deferred warnings once per loop */
         uart_line_rx_poll_warnings(&g_uart_line, uart_line_tx);
 
-#ifdef CONFIG_QEMU_TARGET
-        /* QEMU: must poll. "K_FOREVER" freezes emulation */
-        const k_timeout_t rx_timeout = K_NO_WAIT;
-#else
         /* Real HW: safe to block, wakes on UART IRQ */
         const k_timeout_t rx_timeout = K_FOREVER;
-#endif
 
         if (uart_line_rx_get(&g_uart_line, line_buf, sizeof(line_buf), rx_timeout))
         {
@@ -68,10 +63,5 @@ int main(void)
             const bool ok = ce_dispatch_from_line(line_buf);
             uart_line_tx(&g_uart_line, ok ? "\r\n>> " : "\r\nERR\r\n>> ");
         }
-
-#ifdef CONFIG_QEMU_TARGET
-        /* Yield a tick so emulation doesn't spin */
-        k_msleep(1);
-#endif
     }
 }

@@ -42,6 +42,7 @@ typedef struct
     char last_char;                       /**< Previous char for CRLF handling */
     volatile bool overflowed;             /**< Line overflow occurred */
     volatile bool dropped;                /**< Queue full occurred */
+    void *priv;                           /**< Opaque: internal async/DMA state (private) */
 } uart_line_st;
 
 /**
@@ -107,6 +108,17 @@ void uart_line_set_default(uart_line_st *uline);
  * @param msg Null-terminated string to send
  */
 void uart_line_transmit(const char *msg);
+
+/**
+ * @brief Tear down a UART line instance and release its resources.
+ *
+ * Stops asynchronous RX, detaches the UART callback, and frees the private
+ * async/DMA state allocated from the internal memory slab.
+ *
+ * @param uline  UART line context previously initialized with
+ *                    uart_line_init().
+ */
+void uart_line_deinit(uart_line_st *uline);
 
 #ifdef __cplusplus
 }
