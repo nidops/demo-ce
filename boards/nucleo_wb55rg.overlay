@@ -1,0 +1,23 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Enable USART1 DMA via DMAMUX1 on Nucleo-WB55RG (ST-LINK VCP on PB6/PB7).
+ */
+
+dut: &usart1 {
+    status = "okay";
+    dmas = <&dmamux1 0 15 (STM32_DMA_PERIPH_TX    |
+                           STM32_DMA_PERIPH_8BITS |
+                           STM32_DMA_MEM_8BITS    |
+                           STM32_DMA_PRIORITY_HIGH)>,
+           <&dmamux1 1 14 (STM32_DMA_PERIPH_RX    |
+                           STM32_DMA_PERIPH_8BITS |
+                           STM32_DMA_MEM_8BITS    |
+                           STM32_DMA_PRIORITY_HIGH)>;
+    dma-names = "tx", "rx";
+};
+
+&dmamux1 { status = "okay"; };
+&dma1    { status = "okay"; };
+&dma2    { status = "okay"; };
+
