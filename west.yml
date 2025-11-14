@@ -1,0 +1,26 @@
+manifest:
+  remotes:
+    - name: zephyr
+      url-base: https://github.com/zephyrproject-rtos
+
+    - name: nidhal
+      url-base: https://github.com/nidops
+
+  projects:
+    - name: zephyr
+      remote: zephyr
+      revision: v4.0.0
+      import: true
+
+    - name: cevo
+      remote: nidhal
+      revision: main
+      path: cevo
+
+    - name: buffer-pool
+      remote: nidhal
+      revision: main
+      path: buffer-pool
+
+  self:
+    path: demo-ce

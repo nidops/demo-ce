@@ -8,14 +8,22 @@ project(demo-ce)
 # --------------------------------------------------------------------
 # Add CEVO as a subproject - must come BEFORE referencing 'cevo'
 # --------------------------------------------------------------------
-set(CEVO_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../cevo)
+set(CEVO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cevo" CACHE PATH "Path to the CEVO command engine source tree")
+set(BUFFER_POOL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../buffer-pool" CACHE PATH "Path to the buffer-pool source tree")
 
-if(NOT EXISTS ${CEVO_PATH}/CMakeLists.txt)
-    message(FATAL_ERROR "Missing CEVO source at ${CEVO_PATH}. 
-Did you forget to clone it or run 'git submodule update --init'?")
+if(NOT EXISTS "${CEVO_PATH}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "Missing CEVO source at ${CEVO_PATH}. "
+        "Did you forget to run 'west update' or clone cevo next to demo-ce?")
 endif()
 
-add_subdirectory(${CEVO_PATH} ${CMAKE_BINARY_DIR}/cevo_build)
+if(NOT EXISTS "${BUFFER_POOL_PATH}/buffer.h" OR NOT EXISTS "${BUFFER_POOL_PATH}/buffer.c")
+    message(FATAL_ERROR
+        "Missing buffer-pool source at ${BUFFER_POOL_PATH}. "
+        "Did you forget to run 'west update' or clone buffer-pool next to demo-ce?")
+endif()
+
+add_subdirectory("${CEVO_PATH}" "${CMAKE_BINARY_DIR}/cevo_build")
 
 # --------------------------------------------------------------------
 # Inherit Zephyr toolchain flags and definitions for CEVO
@@ -32,7 +40,11 @@ target_compile_definitions(cevo PRIVATE ${ZEPHYR_DEFINES})
 # --------------------------------------------------------------------
 # Application include paths
 # --------------------------------------------------------------------
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+target_include_directories(app
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${BUFFER_POOL_PATH}
+)
 
 # --------------------------------------------------------------------
 # Link CEVO to this app
@@ -43,7 +55,8 @@ target_link_libraries(app PRIVATE cevo)
 # App source files
 # --------------------------------------------------------------------
 target_sources(app PRIVATE
-    src/main.c
-    src/uart_line.c
-    src/demo.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/uart_line.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/demo.c
+    ${BUFFER_POOL_PATH}/buffer.c
 )

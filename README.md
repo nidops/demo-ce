@@ -1,9 +1,9 @@
 # demo-ce
 
-**demo-ce** is a **Zephyr-based UART Line Receiver Demo** showcasing the [CEVO Command Engine](https://github.com/nidops/cevo).
+**demo-ce** is a **Zephyr-based UART Line Receiver Demo** showcasing the [CEVO Command Engine](https://github.com/nidops/cevo) and the [buffer-pool](https://github.com/nidops/buffer-pool) utility.
 It demonstrates how to:
 
-✅ Receive UART input using **interrupt-driven RX**
+✅ Receive UART input using **async UART RX**
 ✅ Buffer complete lines in a **Zephyr message queue**
 ✅ Dispatch parsed commands to **CEVO demo handlers**
 ✅ Run on **real boards** or **QEMU**
@@ -12,7 +12,7 @@ It demonstrates how to:
 
 ## ✨ Features
 
-- **Portable ISR-based UART line receiver**
+- **Portable async UART line receiver using the shared buffer-pool module for DMA buffers**
 - **Non-blocking message queue** for completed lines
 - **Demo commands** for math, strings, and byte sorting
 - Works on **most Zephyr boards** and **QEMU**
@@ -34,12 +34,16 @@ Optional:
 
 ## 🛠 Build & Run
 
-### 1. Clone required repositories
+### 1. Initialize the west workspace
 ```bash
+mkdir -p ~/zephyrproject
 cd ~/zephyrproject
-git clone https://github.com/nidops/cevo.git
 git clone https://github.com/nidops/demo-ce.git
+west init -l demo-ce
+west update
 ```
+
+Alternatively, clone `cevo` and `buffer-pool` next to this repository so `../cevo` and `../buffer-pool` exist before configuring CMake.
 
 ### 2. Build for QEMU
 ```bash
@@ -103,11 +107,12 @@ demo-ce/
 │  prj.conf          <-- Minimal Zephyr config
 │
 ├─ src/
-│   main.c           <-- UART ISR + line queue + dispatcher loop
+│   main.c           <-- UART line queue + dispatcher loop
+│   uart_line.c      <-- Async UART RX/TX + buffer-pool DMA buffers
 │   demo.c           <-- Demo command handlers (add, div, reverse, etc.)
 │
 ├─ inc/
-│   uart.h           <-- UART TX helper + RX buffer definitions
+│   uart_line.h      <-- UART line RX/TX API and buffer definitions
 │   demo.h           <-- Demo handler API
 │
 └─ inputs/
@@ -133,15 +138,15 @@ The CEVO command table (`inputs/demo.yaml`) maps CLI commands to C handlers:
 ## 🏗 Architecture Overview
 
 ```
-UART ISR --> Line Buffer --> k_msgq --> Thread Mode Processing --> CEVO Dispatcher --> Handler
+UART async callback --> Line Buffer --> k_msgq --> Thread Mode Processing --> CEVO Dispatcher --> Handler
 ```
 
-- **Interrupt level**: collects chars, detects line endings
+- **UART callback**: collects chars, detects line endings, and recycles DMA buffers through buffer-pool
 - **Queue**: stores completed lines safely
-- **Thread mode**: processes commands outside ISR
+- **Thread mode**: processes commands outside the UART callback
 - **CEVO**: parses + validates args → calls handler
 
-![architecture](https://dummyimage.com/800x200/000/fff&text=ISR+-->+Queue+-->+Dispatcher+-->+Handler)
+![architecture](https://dummyimage.com/800x200/000/fff&text=Async+UART+-->+Queue+-->+Dispatcher+-->+Handler)
 
 ---
 

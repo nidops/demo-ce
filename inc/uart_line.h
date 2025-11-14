@@ -113,7 +113,7 @@ void uart_line_transmit(const char *msg);
  * @brief Tear down a UART line instance and release its resources.
  *
  * Stops asynchronous RX, detaches the UART callback, and frees the private
- * async/DMA state allocated from the internal memory slab.
+ * async/DMA state allocated from the memory slab.
  *
  * @param uline  UART line context previously initialized with
  *                    uart_line_init().
