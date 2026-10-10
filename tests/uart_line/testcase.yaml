@@ -1,0 +1,6 @@
+tests:
+  demo_ce.uart_line:
+    tags: [uart, dma]
+    platform_allow: [native_sim/native/64]
+    integration_platforms: [native_sim/native/64]
+    harness: ztest

@@ -1,67 +1,38 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/**
- * @file main.c
- * @brief CEVO UART Line Receiver Demo (portable, interrupt-driven)
- *
- * Receives lines via UART interrupts, queues them using a Zephyr message queue,
- * and dispatches complete lines to CEVO. Compatible with most Zephyr boards
- * and QEMU (with echo enabled only in QEMU).
- */
-
-#include "uart_line.h"
 #include "ce_dispatch.h"
+#include "uart_line.h"
 
-/* Each receiver instance owns its own queue */
-K_MSGQ_DEFINE(line_msgq,
-              UART_LINE_MAX_LEN,
-              UART_LINE_QUEUE_LENGTH,
-              UART_LINE_MSGQ_ALIGN);
-
-/* Default UART line context (TX + RX + warnings) */
-static uart_line_st g_uart_line;
+K_MSGQ_DEFINE(line_msgq, UART_LINE_MAX_LEN, UART_LINE_QUEUE_LENGTH, UART_LINE_MSGQ_ALIGN);
+static uart_line_st console;
 
 int main(void)
 {
-    const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	int rc = uart_line_init(dev, &console, &line_msgq);
 
-    if ((NULL == dev) || (false == device_is_ready(dev)))
-    {
-        /* Device not ready! */
-        for(;;)
-        {
-            printk("FATAL: console UART not ready\r\n");
-            k_msleep(1000);
-        }
-    }
+	if (rc != 0) {
+		printk("FATAL: UART DMA init failed (%d)\r\n", rc);
+		return rc;
+	}
+	uart_line_set_default(&console);
+	uart_line_tx(&console, "\r\nCEVO Demo " CONFIG_BOARD " ready\r\n>> ");
 
-    if (0 != uart_line_init(dev, &g_uart_line, &line_msgq))
-    {
-        for(;;)
-        {
-            printk("FATAL: UART init failed\r\n");
-            k_msleep(1000);
-        }
-    }
+	for (;;) {
+		char line[UART_LINE_MAX_LEN];
+		bool received = uart_line_rx_get(&console, line, sizeof(line), K_MSEC(100));
 
-    uart_line_set_default(&g_uart_line);
+		uart_line_rx_poll_warnings(&console, uart_line_tx);
+		rc = uart_line_rx_error(&console);
+		if (rc != 0) {
+			printk("FATAL: UART DMA restart failed (%d)\r\n", rc);
+			uart_line_deinit(&console);
+			return rc;
+		}
+		if (received) {
+			uart_line_tx(&console, "\r\n");
+			bool ok = ce_dispatch_from_line(line);
 
-    uart_line_tx(&g_uart_line, "\r\nCEVO Demo " CONFIG_BOARD " ready\r\n>> ");
-
-    char line_buf[UART_LINE_MAX_LEN];
-
-    for(;;)
-    {
-        /* Print deferred warnings once per loop */
-        uart_line_rx_poll_warnings(&g_uart_line, uart_line_tx);
-
-        /* Real HW: safe to block, wakes on UART IRQ */
-        const k_timeout_t rx_timeout = K_FOREVER;
-
-        if (uart_line_rx_get(&g_uart_line, line_buf, sizeof(line_buf), rx_timeout))
-        {
-            uart_line_tx(&g_uart_line, "\r\n");
-            const bool ok = ce_dispatch_from_line(line_buf);
-            uart_line_tx(&g_uart_line, ok ? "\r\n>> " : "\r\nERR\r\n>> ");
-        }
-    }
+			uart_line_tx(&console, ok ? "\r\n>> " : "\r\nERR\r\n>> ");
+		}
+	}
 }

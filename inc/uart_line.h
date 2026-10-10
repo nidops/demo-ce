@@ -1,127 +1,68 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/**
- * @file uart_line.h
- * @brief Minimal UART line RX/TX API with deferred warnings.
- */
-
 #ifndef UART_LINE_H_
 #define UART_LINE_H_
+
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
+#define UART_LINE_MAX_LEN          128U
+#define UART_LINE_QUEUE_LENGTH     8U
+#define UART_LINE_MSGQ_ALIGN       1U
+#define UART_LINE_DMA_CHUNK        128U
+#define UART_LINE_DMA_BUFFER_COUNT 2U
 
-/**
- * @brief Max length of a single received line (including null terminator)
+/* Zero-initialize before first init. Keep alive until deinit succeeds.
+ * Each instance owns an aligned, fixed-size Zephyr memory slab for RX DMA.
+ * Reception and lifecycle fields are private to uart_line.c.
  */
-#define UART_LINE_MAX_LEN       (128u)
-
-/**
- * @brief Max number of queued lines
- */
-#define UART_LINE_QUEUE_LENGTH  (8u)
-
-/**
- * @brief Only bytes are queued -> 1-byte alignment is sufficient
- */
-#define UART_LINE_MSGQ_ALIGN     (1u)
-
-/**
- * @brief Per-instance UART line context (RX + TX + warnings)
- */
-typedef struct
-{
-    const struct device *uart_dev;        /**< Bound UART device */
-    struct k_msgq *msgq;                  /**< Queue for completed lines */
-    char buf[UART_LINE_MAX_LEN];          /**< Assembly buffer */
-    size_t pos;                           /**< Current buffer write index */
-    char last_char;                       /**< Previous char for CRLF handling */
-    volatile bool overflowed;             /**< Line overflow occurred */
-    volatile bool dropped;                /**< Queue full occurred */
-    void *priv;                           /**< Opaque: internal async/DMA state (private) */
+typedef struct {
+	const struct device *uart_dev;
+	struct k_msgq *msgq;
+	struct k_mem_slab rx_pool;
+	uint8_t dma_storage[UART_LINE_DMA_BUFFER_COUNT][UART_LINE_DMA_CHUNK]
+		__aligned(sizeof(void *));
+	struct k_spinlock line_lock;
+	struct k_mutex lifecycle_lock;
+	struct k_work_delayable restart_work;
+	struct k_sem disabled_sem;
+	atomic_t closing;
+	atomic_t disabled;
+	atomic_t warnings;
+	atomic_t rx_error;
+	char buf[UART_LINE_MAX_LEN];
+	size_t pos;
+	char last_char;
+	bool discarding;
+	bool initialized;
 } uart_line_st;
 
-/**
- * @brief Initialize interrupt-driven UART line handler.
- *
- * @param dev    UART device (from DEVICE_DT_GET)
- * @param uline  Pointer to UART line context
- * @param queue  Message queue to push completed lines
- *
- * @return 0 on success, negative errno on failure
+/* Thread context only; callers serialize init/deinit for each instance.
+ * Queue elements must be UART_LINE_MAX_LEN bytes. After a failed init, call
+ * deinit before releasing the context: callback cleanup can also fail.
  */
-int uart_line_init(const struct device *dev,
-                   uart_line_st *uline,
-                   struct k_msgq *queue);
+int uart_line_init(const struct device *dev, uart_line_st *line, struct k_msgq *queue);
 
-/**
- * @brief Retrieve one completed line from the queue.
- *
- * @param uline    UART line context
- * @param dst      Destination buffer
- * @param dst_len  Size of destination buffer
- * @param timeout  Zephyr timeout (K_NO_WAIT, K_FOREVER, etc.)
- *
- * @retval true  if a line was retrieved
- * @retval false on timeout or invalid params
+/* Stop RX, wait for all driver buffer releases, cancel recovery, detach callback.
+ * Returns 0 when context/storage may be reused. On failure retain the context and
+ * retry after the driver finishes; no driver-owned memory is freed or recycled.
  */
-bool uart_line_rx_get(uart_line_st *uline,
-                      char *dst,
-                      size_t dst_len,
-                      k_timeout_t timeout);
+int uart_line_deinit(uart_line_st *line);
 
-/**
- * @brief Check and clear deferred warning flags.
- *
- * @param uline    UART line context
- * @param warn_cb  Callback function taking (line, msg)
- */
-void uart_line_rx_poll_warnings(uart_line_st *uline,
-                                void (*warn_cb)(uart_line_st *uline, const char *msg));
-
-/**
- * @brief Blocking UART TX helper.
- *
- * @param uline  UART line context
- * @param msg    Null-terminated string to send
- */
-void uart_line_tx(uart_line_st *uline, const char *msg);
-
-/**
- * @brief Set the default UART instance for uart_line_transmit()
- *
- * After calling this, uart_line_transmit() will redirect to uart_line_tx()
- * using the given default line context.
- */
-void uart_line_set_default(uart_line_st *uline);
-
-/**
- * @brief Demo-compatible TX helper
- *
- * Redirects to uart_line_tx() using the default UART line set by
- * uart_line_set_default(). Keeps legacy demo.c unchanged.
- *
- * @param msg Null-terminated string to send
- */
+/* 0 while RX is healthy; negative driver error when a deferred restart failed. */
+int uart_line_rx_error(const uart_line_st *line);
+bool uart_line_rx_get(uart_line_st *line, char *dst, size_t dst_len, k_timeout_t timeout);
+void uart_line_rx_poll_warnings(uart_line_st *line, void (*warn)(uart_line_st *, const char *));
+void uart_line_tx(uart_line_st *line, const char *msg);
+void uart_line_set_default(uart_line_st *line);
 void uart_line_transmit(const char *msg);
-
-/**
- * @brief Tear down a UART line instance and release its resources.
- *
- * Stops asynchronous RX, detaches the UART callback, and frees the private
- * async/DMA state allocated from the memory slab.
- *
- * @param uline  UART line context previously initialized with
- *                    uart_line_init().
- */
-void uart_line_deinit(uart_line_st *uline);
 
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* UART_LINE_H_ */
+#endif

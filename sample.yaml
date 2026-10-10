@@ -3,7 +3,7 @@ sample:
 tests:
   sample.drivers.uart_line_rx:
     integration_platforms:
-      - qemu_x86
+      - nucleo_wb55rg
     tags:
       - uart
       - serial
