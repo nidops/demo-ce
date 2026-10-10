@@ -1,162 +1,110 @@
 # demo-ce
 
-**demo-ce** is a **Zephyr-based UART Line Receiver Demo** showcasing the [CEVO Command Engine](https://github.com/nidops/cevo) and the [buffer-pool](https://github.com/nidops/buffer-pool) utility.
-It demonstrates how to:
+A Zephyr UART command console using the [CEVO command engine](https://github.com/nidops/cevo).
+The qualified hardware target is the STM32WB55 Nucleo with ST-LINK virtual COM port.
+The firmware and native receiver tests run independently of any host test framework.
 
-✅ Receive UART input using **async UART RX**
-✅ Buffer complete lines in a **Zephyr message queue**
-✅ Dispatch parsed commands to **CEVO demo handlers**
-✅ Run on **real boards** or **QEMU**
+## Design
 
----
+```text
+UART RX DMA → async callback → bounded line assembler → message queue
+                                                        ↓
+                                              application thread
+                                                        ↓
+                                               CEVO → handler → TX
+```
 
-## ✨ Features
+Each receiver owns two aligned 128-byte DMA buffers in a Zephyr `k_mem_slab`.
+The driver returns ownership through `UART_RX_BUF_RELEASED`; received-byte events
+alone never make a buffer reusable. Recovery waits for `UART_RX_DISABLED` before
+restarting. Teardown waits for release, stops recovery work and detaches the callback.
+If teardown fails, the caller retains the context and retries.
 
-- **Portable async UART line receiver using the shared buffer-pool module for DMA buffers**
-- **Non-blocking message queue** for completed lines
-- **Demo commands** for math, strings, and byte sorting
-- Works on **most Zephyr boards** and **QEMU**
-- Fully **Apache 2.0 licensed**
+The callback assembles newline-terminated commands. Idle notifications preserve
+partial lines. Oversized lines are discarded through newline, including any valid
+command suffix. The queue holds eight lines of 128 bytes each; commands have at
+most 127 characters. A full queue drops a complete line and reports a warning.
+CEVO dispatch and polling TX run in the application thread.
 
----
+The buffers and queue payloads reserve 1,280 bytes, plus the line assembly buffer,
+receiver/kernel metadata and thread stacks. No heap allocation is used for RX.
+The Nucleo overlay enables USART1 RX DMA through DMAMUX1 request 14. TX uses polling.
 
-## ⚙️ Requirements
+## Build and flash
 
-- [Zephyr SDK](https://docs.zephyrproject.org/latest/getting_started/index.html) ≥ 0.16
-- `west` build tool
-- Python ≥ 3.8
+First prepare a Zephyr SDK and west environment using the
+[Zephyr getting started guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html).
+Install `ruamel.yaml` in the Python environment used for the build. Clone these
+repositories as siblings:
 
-Optional:
-- Real hardware (e.g. STM32 Nucleo WB55RG)
-- Or simply run **QEMU**
-
----
-
-## 🛠 Build & Run
-
-### 1. Initialize the west workspace
 ```bash
-mkdir -p ~/zephyrproject
-cd ~/zephyrproject
+git clone https://github.com/nidops/cevo.git
 git clone https://github.com/nidops/demo-ce.git
-west init -l demo-ce
-west update
-```
-
-Alternatively, clone `cevo` and `buffer-pool` next to this repository so `../cevo` and `../buffer-pool` exist before configuring CMake.
-
-### 2. Build for QEMU
-```bash
 cd demo-ce
-west build -b qemu_x86 -p auto . -- -DINPUT_YAML=inputs/demo.yaml
-west build -t run
+python -m pip install ruamel.yaml
+west build -b nucleo_wb55rg/stm32wb55xx -d build -p always . -- \
+  -DINPUT_YAML="$PWD/inputs/demo.yaml" \
+  -DDTC_OVERLAY_FILE="$PWD/boards/nucleo_wb55rg.overlay" \
+  -DPython_EXECUTABLE="$(command -v python)"
 ```
 
-### 3. Or build for a real board
+CEVO defaults to `../cevo`; override `CEVO_PATH` for another checkout layout.
+Select your own ST-LINK serial locally before flashing:
+
 ```bash
-cd demo-ce
-west build -b nucleo_wb55rg -p auto . -- -DINPUT_YAML=inputs/demo.yaml
-west flash
+export PROBE_SERIAL=YOUR_STLINK_SERIAL
+west flash -d build -r openocd --no-erase --verify \
+  --cmd-pre-init="adapter serial $PROBE_SERIAL"
 ```
 
----
+Connect to your board's virtual COM port at 115200 baud, 8N1. Startup reports
+`CEVO Demo`, the board name and the `>> ` prompt. Example commands:
 
-## 💻 Example UART session
+| Command | Result |
+| --- | --- |
+| `add 10 20` | `Sum: 30` |
+| `div 1000000000 4` | `Quotient: 250000000` |
+| `reverse hello` | `olleh` |
+| `upper helloworld` | `HELLOWORLD` |
+| `sort FF01A0 3` | `01 A0 FF` |
+| `foobar` | `ERR` |
 
-When you connect via serial (or QEMU console), you’ll see:
+After malformed or oversized input, a subsequent valid command should still work.
+`sort` callers must keep the length within the decoded byte count; CEVO does not
+associate that scalar with the pointer's extent. Addition uses unsigned arithmetic.
 
-```
-UART Line Receiver + CEVO Demo ready
->>
-```
+## Native receiver tests
 
-Try commands:
+The Zephyr ztest suite exercises the actual receiver and memory slab against a
+controlled async UART driver on `native_sim`. It does not need CEVO or a board:
 
-```
->> add 10 20
-Sum: 30
-
->> div 1000000000 4
-Quotient: 250000000
-
->> reverse hello
-olleh
-
->> upper helloworld
-HELLOWORLD
-
->> sort FF01A0 3
-01 A0 FF
+```bash
+west build -b native_sim/native/64 -d build-tests -p always tests/uart_line -- \
+  -DEXTRA_CFLAGS=-Werror=implicit-function-declaration
+timeout 30 build-tests/zephyr/zephyr.exe
 ```
 
-Invalid commands return an error:
+The 16 tests cover partial ranges, CR/LF, DMA turnover, line and queue overflow,
+stop/release ordering, failed buffer responses and restarts, asynchronous teardown,
+timeouts, cleanup retries, repeated lifecycle operations, and rejection of truncated
+or unterminated queue messages. CI runs this suite with the host compiler and a
+pinned Zephyr revision.
 
-```
->> foobar
-ERR
->>
-```
+## Qualification
 
----
+The firmware has been exercised on the STM32WB55 Nucleo, including DMA buffer
+turnover, bursts, idle fragments, oversized lines, MCU reset and debugger resume.
+The native suite covers controlled driver failures; it does not establish timing
+or driver behavior on arbitrary hardware. Physical USB unplug/replug and target
+fatal-error injection were not qualified.
 
-## 📂 Project structure
+The verified toolchain uses Zephyr revision
+`b3ccee473ed64ac9ba7260beafb4fd175eee13ab` and SDK 0.17.1. Other Zephyr revisions
+and boards require their own validation; generic QEMU UART compatibility is not
+claimed for this DMA application.
 
-```
-demo-ce/
-│  README.md         <-- This file
-│  prj.conf          <-- Minimal Zephyr config
-│
-├─ src/
-│   main.c           <-- UART line queue + dispatcher loop
-│   uart_line.c      <-- Async UART RX/TX + buffer-pool DMA buffers
-│   demo.c           <-- Demo command handlers (add, div, reverse, etc.)
-│
-├─ inc/
-│   uart_line.h      <-- UART line RX/TX API and buffer definitions
-│   demo.h           <-- Demo handler API
-│
-└─ inputs/
-    demo.yaml        <-- CEVO command definition (handlers + args)
-```
+Keep toolchain paths, probe identities, local bench configs, firmware outputs and
+raw test evidence outside Git. `*.local.yaml`, `*.local.yml`, `build/`, `build-*/`
+and `artifacts/` are ignored.
 
----
-
-## 🧩 Command Table
-
-The CEVO command table (`inputs/demo.yaml`) maps CLI commands to C handlers:
-
-| Command  | Args                        | Description                     |
-|----------|-----------------------------|---------------------------------|
-| `add`    | `u32, u32`                  | Add two 32-bit integers         |
-| `div`    | `u32, u32`                  | Divide two 32-bit integers      |
-| `upper`  | `string`                    | Convert string to uppercase     |
-| `reverse`| `string`                    | Reverse a string                |
-| `sort`   | `u8p (bytes), u16 (length)` | Sort a hex byte array           |
-
----
-
-## 🏗 Architecture Overview
-
-```
-UART async callback --> Line Buffer --> k_msgq --> Thread Mode Processing --> CEVO Dispatcher --> Handler
-```
-
-- **UART callback**: collects chars, detects line endings, and recycles DMA buffers through buffer-pool
-- **Queue**: stores completed lines safely
-- **Thread mode**: processes commands outside the UART callback
-- **CEVO**: parses + validates args → calls handler
-
-![architecture](https://dummyimage.com/800x200/000/fff&text=Async+UART+-->+Queue+-->+Dispatcher+-->+Handler)
-
----
-
-## 📝 License
-
-This project is licensed under the **Apache License 2.0**.
-See `LICENSE` for details.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome!
+Licensed under Apache-2.0; see [LICENSE](LICENSE).

@@ -1,0 +1,37 @@
+name: checks
+'on':
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  uart-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ZEPHYR_REVISION: b3ccee473ed64ac9ba7260beafb4fd175eee13ab
+      ZEPHYR_TOOLCHAIN_VARIANT: host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare the pinned Zephyr source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build device-tree-compiler
+          git init "$RUNNER_TEMP/zephyr"
+          git -C "$RUNNER_TEMP/zephyr" remote add origin https://github.com/zephyrproject-rtos/zephyr.git
+          git -C "$RUNNER_TEMP/zephyr" fetch --depth 1 origin "$ZEPHYR_REVISION"
+          git -C "$RUNNER_TEMP/zephyr" checkout --detach FETCH_HEAD
+          python -m pip install -r "$RUNNER_TEMP/zephyr/scripts/requirements-base.txt"
+          echo "ZEPHYR_BASE=$RUNNER_TEMP/zephyr" >> "$GITHUB_ENV"
+      - name: Build and run receiver regressions
+        run: |
+          cmake -G Ninja -S tests/uart_line -B build-tests \
+            -DBOARD=native_sim/native/64 \
+            -DPython_EXECUTABLE="$(command -v python)" \
+            -DPython3_EXECUTABLE="$(command -v python)" \
+            -DEXTRA_CFLAGS=-Werror=implicit-function-declaration
+          cmake --build build-tests --parallel 2
+          timeout 30 build-tests/zephyr/zephyr.exe
